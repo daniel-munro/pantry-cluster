@@ -1,0 +1,68 @@
+import pandas as pd
+
+trait_df = pd.read_csv('../Geuvadis_TWAS/data/gwas/gwas_metadata.txt', sep='\t')
+traits = trait_df['Tag'].tolist()
+
+rule all:
+    input:
+        # "data/sumstats/ADIPOGen_Adiponectin.sumstats.gz",
+        # "data/finemap/ADIPOGen_Adiponectin/ADIPOGen_Adiponectin.chr1.focus.tsv",
+        # "data/finemap/UKB_50_Standing_height/UKB_50_Standing_height.chr1.focus.tsv",
+        expand("data/finemap/{trait}.focus.tsv.gz", trait=traits),
+
+rule sumstats:
+    input:
+        sumstat = "../Geuvadis_TWAS/data/gwas/imputed_gwas_hg38_1.1/imputed_{trait}.txt.gz",
+    output:
+        sumstat = "data/sumstats/{trait}.sumstats.gz",
+    params:
+        out_dir = "data/sumstats",
+    shell:
+        """
+        mkdir -p {params.out_dir}
+        zcat {input.sumstat} \
+            | tail -n+2 \
+            | awk 'BEGIN{{OFS="\t"; print "CHR", "BP", "SNP", "A1", "A2", "Z", "N"}}{{print $3, $4, $2, $5, $6, $10, $9}}' \
+            | sed 's/^chr//' \
+            | gzip -c \
+            > {output.sumstat}
+        """
+
+rule focus:
+    input:
+        sumstats = "data/sumstats/{trait}.sumstats.gz",
+        ldref = multiext("../Geuvadis_TWAS/data/LDREF_b38ids/1000G.EUR.{chrom}", ".bed", ".bim", ".fam"),
+        db = "data/geuvadis.db",
+    output:
+        finemap = "data/finemap_chr/{trait}/{trait}.chr{chrom}.focus.tsv",
+    params:
+        out_dir = "data/finemap_chr/{trait}",
+        out_prefix = "data/finemap_chr/{trait}/{trait}.chr{chrom}",
+        ldref_prefix = "../Geuvadis_TWAS/data/LDREF_b38ids/1000G.EUR.{chrom}",
+    group: "focus",
+    # retries: 5,
+    resources:
+        # mem_mb = lambda wildcards, attempt: 32000 * attempt,
+        # mem_mb = 32000,
+    shell:
+        # --verbose
+        """
+        mkdir -p {params.out_dir}
+        focus finemap \
+            {input.sumstats} \
+            {params.ldref_prefix} \
+            {input.db} \
+            --locations 38:EUR \
+            --chr {wildcards.chrom} \
+            --out {params.out_prefix}
+        """
+
+rule combine_chroms:
+    input:
+        tsv = expand("data/finemap_chr/{{trait}}/{{trait}}.chr{chrom}.focus.tsv", chrom=range(1, 23)),
+    output:
+        tsv = "data/finemap/{trait}.focus.tsv.gz",
+    group: "focus",
+    shell:
+        "cat {input.tsv} | awk 'NR==1 || !/^block/' | gzip -c > {output.tsv}"
+

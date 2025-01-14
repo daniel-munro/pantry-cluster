@@ -1,0 +1,86 @@
+# For running very slow tensorqtl runs.
+
+import math
+from pathlib import Path
+import pandas as pd
+import subprocess
+
+TISSUE = 'SKINS'
+TISSUE_DIR = f'../../pheast/{TISSUE}'
+geno_prefix = '../../geno/gtex'
+
+# List short steps here so they will not be submitted as cluster jobs:
+# (These can be specified on a per-file basis)
+localrules:
+    # index_bed,
+
+# These are the target files to be generated (or regenerated if outdated).
+# By default it includes all output files specified in the config file.
+rule all:
+    input:
+        # "all.cis_independent_qtl.chr1.batch0.txt.gz",
+        "all.cis_independent_qtl.chr1.batch2.txt.gz",
+        # "all.cis_independent_qtl.chr10.batch3.txt.gz",
+        "all.cis_independent_qtl.chr15.batch6.txt.gz",
+        "all.cis_independent_qtl.chr17.batch6.txt.gz",
+        # "all.cis_independent_qtl.chr17.batch8.txt.gz",
+        "all.cis_independent_qtl.chr19.batch7.txt.gz",
+        "all.cis_independent_qtl.chr5.batch0.txt.gz",
+        "all.cis_independent_qtl.chr6.batch3.txt.gz",
+        "all.cis_independent_qtl.chr7.batch6.txt.gz",
+        "all.cis_independent_qtl.chr9.batch6.txt.gz",
+
+rule tensorqtl_independent_chr_batch_sub:
+    """Use stepwise regression to identify multiple conditionally independent cis-QTLs per phenotype."""
+    input:
+        geno = multiext(geno_prefix, '.bed', '.bim', '.fam'),
+        bed = f'{TISSUE_DIR}/input/phenotypes/all.bed.gz',
+        bedi = f'{TISSUE_DIR}/input/phenotypes/all.bed.gz.tbi',
+        covar = f'{TISSUE_DIR}/intermediate/covar/all.covar.tsv',
+        groups = f'{TISSUE_DIR}/input/phenotypes/all.phenotype_groups.txt',
+        cis = f'{TISSUE_DIR}/output/qtl/all.cis_qtl.txt.gz',
+    output:
+        'all.cis_independent_qtl.{chrom}.batch{batch}.{subbatch}.txt.gz',
+    params:
+        geno_prefix = geno_prefix,
+    conda: 'tensorqtl'
+    resources:
+        walltime = 48, # Give extra time for combined-phenotype mapping
+        mem_mb = 64000,
+        # gpu = '-l ngpus=1',
+    retries: 5
+    shell:
+        ## Cluster environments may require cuda to be loaded, e.g.:
+        # module load cuda
+        """
+        python3 ../run_tensorqtl.py \
+            {params.geno_prefix} \
+            {input.bed} \
+            {output} \
+            --covariates {input.covar} \
+            --cis_output {input.cis} \
+            --groups {input.groups} \
+            --mode cis_independent \
+            --chrom {wildcards.chrom} \
+            --batch {wildcards.batch} \
+            --subbatch {wildcards.subbatch} \
+            >> log.{wildcards.chrom}.{wildcards.batch}.{wildcards.subbatch}.txt 2>&1
+        """
+
+rule tensorqtl_independent_chr_batch:
+    """Use stepwise regression to identify multiple conditionally independent cis-QTLs per phenotype."""
+    input:
+        expand('all.cis_independent_qtl.{{chrom}}.batch{{batch}}.{sub}.txt.gz', sub=range(10)),
+    output:
+        'all.cis_independent_qtl.{chrom,[A-Za-z0-9]+}.batch{batch,[0-9]+}.txt.gz',
+    params:
+        uncompressed = 'all.cis_independent_qtl.{chrom}.{batch}.txt',
+    conda: 'pantry'
+    shell:
+        """
+        zcat {input[0]} | head -n1 > {params.uncompressed}
+        for f in {input}; do
+            zcat $f | tail -n+2 >> {params.uncompressed}
+        done
+        gzip {params.uncompressed}
+        """

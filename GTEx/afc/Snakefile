@@ -1,0 +1,358 @@
+import pandas as pd
+
+def sample_to_geno_id(sample_id):
+    return sample_id.split('-')[0] + '-' + sample_id.split('-')[1]
+
+# vcf = "/mnt/mohammadi/group/data/gtex/v8/ase/variant_calls/GTEx_Analysis_2017-06-05_v8_WholeGenomeSeq_838Indiv_Analysis_Freeze.SHAPEIT2_phased.vcf"
+gtf = "../ref/Homo_sapiens.GRCh38.106.chr.gtf"
+
+tissue = "ADPSBQ"
+samples_phenos = pd.read_csv(f"../phenos/{tissue}/input/samples.txt", sep='\t', header=None)[0].tolist()
+samples_pheast = pd.read_csv(f"../pheast/{tissue}/input/samples.txt", sep='\t', header=None)[0].tolist()
+samples_phenos = [s for s in samples_phenos if sample_to_geno_id(s) in samples_pheast]
+
+localrules:
+    afc_eqtl_input_sep,
+    afc_eqtl_input_comb,
+    afcn_prepare_eqtl,
+    # phaser_expr_matrix,
+    phaser_sample_map,
+    phaser_gene_var_pairs,
+
+rule all:
+    input:
+        # f"{tissue}/eqtls_sep.tsv",
+        # f"{tissue}/read_counts.bed.gz",
+        f"{tissue}/{tissue}.sep.eQTL_aFC.txt",
+        f"{tissue}/{tissue}.comb.eQTL_aFC.txt",
+        f"{tissue}/{tissue}.sep.eQTL_aFCn.txt",
+        f"{tissue}/{tissue}.comb.eQTL_aFCn.txt",
+        # f"{tissue}/phaser_pop_out/{tissue}.expr_matrix.gw_phased.bed.gz",
+        f"{tissue}/{tissue}.sep.ASE_aFC.txt",
+        f"{tissue}/{tissue}.comb.ASE_aFC.txt",
+
+
+rule afc_eqtl_input_sep:
+    """Convert tensorQTL output to aFC.py input
+    
+    Extract from tensorQTL output file the phenotype_id and variant_id column.
+    Then extract chromosome and location from variant IDs and add those.
+    """
+    input:
+        qtl = "../pheast/{tissue}/output/qtl/expression.cis_independent_qtl.txt.gz"
+    output:
+        qtl = "{tissue}/eqtls_sep.tsv"
+    run:
+        df = pd.read_csv(input.qtl, sep="\t")
+        df = df[["phenotype_id", "variant_id"]]
+        with open(output.qtl, "w") as out:
+            out.write("pid\tsid\tsid_chr\tsid_pos\n")
+            for row in df.to_dict(orient="records"):
+                chrom, pos = row["variant_id"].split("_")[:2]
+                out.write(f"{row['phenotype_id']}\t{row['variant_id']}\t{chrom}\t{pos}\n")
+
+
+rule afc_eqtl_input_comb:
+    """Get eQTL input for combined-mapping eQTLs"""
+    input:
+        qtl = "../pheast/{tissue}/output/qtl/all.cis_independent_qtl.txt.gz"
+    output:
+        qtl = "{tissue}/eqtls_comb.tsv"
+    run:
+        df = pd.read_csv(input.qtl, sep="\t")
+        df = df[["phenotype_id", "variant_id"]]
+        # Keep only expression phenotypes:
+        df = df[df["phenotype_id"].str.startswith("expression:")]
+        df["phenotype_id"] = df["phenotype_id"].str.replace("expression:", "")
+        with open(output.qtl, "w") as out:
+            out.write("pid\tsid\tsid_chr\tsid_pos\n")
+            for row in df.to_dict(orient="records"):
+                chrom, pos = row["variant_id"].split("_")[:2]
+                out.write(f"{row['phenotype_id']}\t{row['variant_id']}\t{chrom}\t{pos}\n")
+
+
+rule assemble_read_counts:
+    """Assemble kallisto read counts into a single file"""
+    input:
+        bed = "../phenos/{tissue}/output/expression.bed.gz",
+        kallisto = expand("../phenos/{{tissue}}/intermediate/expression/{sample_id}/abundance.tsv", sample_id=samples_phenos),
+        samples = "../phenos/{tissue}/input/samples.txt",
+        gtf = gtf,
+    output:
+        bed = "{tissue}/read_counts.tmp.bed"
+    params:
+        kallisto_dir = "../phenos/{tissue}/intermediate/expression"
+    shell:
+        """
+        python3 scripts/assemble_read_counts.py \
+            --input-dir {params.kallisto_dir} \
+            --samples {input.samples} \
+            --ref-anno {input.gtf} \
+            --output {output.bed}
+        """
+
+
+rule afc_expression_input:
+    """Make expression table compatible with genotypes and compress/index"""
+    input:
+        bed = "{tissue}/read_counts.tmp.bed",
+        geno_samples = "../geno/ids.txt",
+    output:
+        bed = "{tissue}/read_counts.bed.gz",
+        bedi = "{tissue}/read_counts.bed.gz.tbi",
+    params:
+        bed = "{tissue}/read_counts.bed",
+    shell:
+        """
+        python3 ../scripts/prepare_gtex_bed.py \
+            --bed {input.bed} \
+            --samples {input.geno_samples} \
+            --out {params.bed}
+        bgzip {params.bed}
+        tabix -p bed {output.bed}
+        """
+
+
+rule afc_py:
+    """Run aFC.py"""
+    input:
+        vcf = "geno_phased.vcf.gz",
+        vcfi = "geno_phased.vcf.gz.tbi",
+        bed = "{tissue}/read_counts.bed.gz",
+        bedi = "{tissue}/read_counts.bed.gz.tbi",
+        qtl = "{tissue}/eqtls_{version}.tsv",
+        covar = "../pheast/{tissue}/intermediate/covar/expression.covar.tsv",
+    output:
+        afc = "{tissue}/{tissue}.{version}.eQTL_aFC.txt"
+    # conda:
+    #     "../../../etc/envs/afc.yaml"
+    resources:
+        walltime = 12
+    shell:
+        """
+        python3 ~/tools/aFC/aFC.py \
+            --vcf {input.vcf} \
+            --pheno {input.bed} \
+            --qtl {input.qtl} \
+            --cov {input.covar} \
+            --log_xform 0 \
+            --output {output.afc}
+        """
+
+###########
+## aFC-n ##
+###########
+
+rule afcn_prepare_expression:
+    """Regress out selected covariates from expression and format for aFC-n
+    
+    Do regression of covariates on each gene, select covariates with p < 0.01,
+    and regress gene on only those, saving residuals. Output format is CSV with
+    first column called 'Name' with gene IDs and subsequent columns for samples.
+    Covariate procedure based on https://github.com/PejLab/aFCn/issues/1
+    """
+    input:
+        bed = "{tissue}/read_counts.bed.gz",
+        covar = "../pheast/{tissue}/intermediate/covar/expression.covar.tsv",
+    output:
+        csv = "{tissue}/read_counts.log2_covar_resid.csv.gz",
+    shell:
+        """
+        python3 scripts/regress_out_covars.py \
+            --bed {input.bed} \
+            --covar {input.covar} \
+            --out {output.csv}
+        """
+
+rule afcn_prepare_eqtl:
+    """Reformat eQTLs for aFC-n: gene_id, variant_id"""
+    input:
+        qtl = "{tissue}/eqtls_{version}.tsv",
+    output:
+        qtl = "{tissue}/eqtls_{version}.afcn.tsv",
+    shell:
+        """
+        echo "gene_id\tvariant_id" > {output.qtl}
+        tail -n+2 {input.qtl} | cut -f 1,2 >> {output.qtl}
+        """
+
+rule afcn:
+    input:
+        vcf = "geno_phased.vcf.gz",
+        vcfi = "geno_phased.vcf.gz.tbi",
+        bed = "{tissue}/read_counts.log2_covar_resid.csv.gz",
+        eqtl = "{tissue}/eqtls_{version}.afcn.tsv",
+    output:
+        afc = "{tissue}/{tissue}.{version}.eQTL_aFCn.txt"
+    threads: 12
+    resources:
+        walltime = 12
+    shell:
+        """
+        python3 ~/tools/aFCn/src/afcn.py \
+            --nthreads {threads} \
+            --conf \
+            --vcf {input.vcf} \
+            --expr {input.bed} \
+            --eqtl {input.eqtl} \
+            --output {output.afc}
+        """
+
+###################
+## ASE-based aFC ##
+###################
+
+rule index_bam:
+    """Index a BAM file."""
+    input:
+        '{basename}.bam',
+    output:
+        '{basename}.bam.bai',
+    params:
+        add_threads = lambda w, threads: threads - 1,
+    threads: 8
+    shell:
+        # It expects the number of *additional* threads to use beyond the first.
+        'samtools index -@ {params.add_threads} {input}'
+
+
+rule phaser:
+    input:
+        bam = "../phenos/{tissue}/intermediate/bam/{sample_id}.bam",
+        bai = "../phenos/{tissue}/intermediate/bam/{sample_id}.bam.bai",
+        vcf = "geno_phased.vcf.gz",
+        vcfi = "geno_phased.vcf.gz.tbi",
+    output:
+        vcf = "{tissue}/phaser_out/{sample_id}.vcf.gz",
+        vcfi = "{tissue}/phaser_out/{sample_id}.vcf.gz.tbi",
+        counts = "{tissue}/phaser_out/{sample_id}.haplotypic_counts.txt",
+    params:
+        out_dir = "{tissue}/phaser_out",
+        out_prefix = "{tissue}/phaser_out/{sample_id}",
+        geno_sample = lambda w: sample_to_geno_id(w.sample_id),
+    conda: "phaser"
+    # group:
+    #     "phaser"
+    threads: 16
+    resources:
+        walltime = 8
+    shell:
+        """
+        mkdir -p {params.out_dir}
+        python2 ~/tools/phaser/phaser/phaser.py \
+            --temp_dir $TMPDIR \
+            --bam {input.bam} \
+            --vcf {input.vcf} \
+            --sample {params.geno_sample} \
+            --baseq 10 \
+            --mapq 255 \
+            --isize 1e6 \
+            --paired_end 1 \
+            --o {params.out_prefix} \
+            --include_indels 0 \
+            --gw_phase_vcf 1 \
+            --threads {threads}
+        """
+
+
+rule phaser_gene_ae:
+    input:
+        counts = "{tissue}/phaser_out/{sample_id}.haplotypic_counts.txt",
+        gene_models = "genes.bed"
+    output:
+        counts = "{tissue}/phaser_gene_ae_out/{sample_id}.gene_ae.txt"
+    params:
+        out_dir = "{tissue}/phaser_gene_ae_out"
+    conda: "phaser"
+    # group:
+    #     "phaser"
+    shell:
+        # --min_haplo_maf 0.05 \
+        """
+        mkdir -p {params.out_dir}
+        python2 ~/tools/phaser/phaser_gene_ae/phaser_gene_ae.py \
+            --haplotypic_counts {input.counts} \
+            --features {input.gene_models} \
+            --o {output.counts}
+        """
+
+
+rule phaser_expr_matrix:
+    """Note: Due to phaser bug involving bed column order, internal tabix command doesn't work, but index isn't necessary.
+    So I ignore the error and delete the bad index files.
+    Also, it must be run from tissue-specific directories, since it uses './tmp/' and deletes all files within at the end.
+    """
+    input:
+        gene_ae = expand("{{tissue}}/phaser_gene_ae_out/{sample_id}.gene_ae.txt", sample_id=samples_phenos),
+        gene_models = "genes.bed",
+    output:
+        bed = "{tissue}/phaser_pop_out/{tissue}.expr_matrix.bed.gz",
+        bedgw = "{tissue}/phaser_pop_out/{tissue}.expr_matrix.gw_phased.bed.gz",
+    params:
+        out_dir = "{tissue}/phaser_pop_out",
+        path_to_smk_dir = "../..",
+        gene_ae_dir = "{tissue}/phaser_gene_ae_out",
+        prefix = "{tissue}.expr_matrix",
+    conda: "phaser"
+    shell:
+        """
+        mkdir -p {params.out_dir}
+        cd {params.out_dir}
+        python2 ~/tools/phaser/phaser_pop/phaser_expr_matrix.py \
+            --gene_ae_dir {params.path_to_smk_dir}/{params.gene_ae_dir} \
+            --features {params.path_to_smk_dir}/{input.gene_models} \
+            --o {params.prefix} || true
+        cd {params.path_to_smk_dir}
+        rm {output.bed}.tbi {output.bedgw}.tbi
+        """
+
+
+rule phaser_sample_map:
+    output:
+        table = "{tissue}/{tissue}.sample_map.txt"
+    run:
+        with open(output.table, "w") as out:
+            out.write("vcf_sample\tbed_sample\n")
+            for sample_id in samples_phenos:
+                geno_id = sample_to_geno_id(sample_id)
+                out.write(f"{geno_id}\t{sample_id}\n")
+
+
+rule phaser_gene_var_pairs:
+    input:
+        afc = "{tissue}/{tissue}.{version}.eQTL_aFC.txt"
+    output:
+        pairs = "{tissue}/{tissue}.{version}.pairs.txt"
+    run:
+        inlines = open(input.afc, "r").read().splitlines()
+        gene_var = [x.split("\t")[:2] for x in inlines[1:]]
+        with open(output.pairs, "w") as out:
+            out.write("gene_id\tvar_id\tvar_contig\tvar_pos\tvar_ref\tvar_alt\n")
+            for x in gene_var:
+                chrom, pos, ref, alt = tuple(x[1].split("_")[:4])
+                out.write(f"{x[0]}\t{x[1]}\t{chrom}\t{pos}\t{ref}\t{alt}\n")
+
+
+rule phaser_cis_var:
+    input:
+        bed = "{tissue}/phaser_pop_out/{tissue}.expr_matrix.gw_phased.bed.gz",
+        vcf = "geno_phased.vcf.gz",
+        gene_var_pairs = "{tissue}/{tissue}.{version}.pairs.txt",
+        sample_map = "{tissue}/{tissue}.sample_map.txt",
+    output:
+        afc = "{tissue}/{tissue}.{version}.ASE_aFC.txt"
+    conda: "phaser"
+    resources:
+        walltime = 12
+    threads: 16
+    shell:
+        """
+        python2 ~/tools/phaser/phaser_pop/phaser_cis_var.py \
+            --bed {input.bed} \
+            --vcf {input.vcf} \
+            --pair {input.gene_var_pairs} \
+            --map {input.sample_map} \
+            --t 16 \
+            --o {output.afc}
+        """
+

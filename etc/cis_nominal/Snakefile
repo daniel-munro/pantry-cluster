@@ -1,0 +1,117 @@
+"""nominal cis-QTL stats for dataset concordance"""
+
+# modalities = ['alt_polyA', 'alt_TSS', 'expression', 'isoforms', 'splicing', 'stability']
+modalities = ['stability']
+
+geuvadis_geno = '../../Geuvadis/input/genotype/GEUVADIS.445_samples.GRCh38.20170504.maf01.filtered.nodup.nochr.chr1-22'
+gtex_geno = '../../GTEx/geno/gtex'
+
+rule all:
+    input:
+        # expand('Geuvadis.{modality}/Geuvadis.{modality}.cis_qtl_pairs.{chrom}.parquet', chrom=range(1, 23), modality=modalities),
+        # expand('GTEx_LCL.{modality}/GTEx_LCL.{modality}.cis_qtl_pairs.chr{chrom}.parquet', chrom=range(1, 23), modality=modalities),
+        expand('GTEx_LCL.{modality}.Geuvadis_top_pairs.txt.gz', modality=modalities),
+        # expand('GTEx_LCL.{modality}.gene_ENSG00000142444_pairs_chr19.txt.gz', modality=modalities),
+        # expand('GTEx_LCL.{modality}.gene_ENSG00000174945_pairs_chr7.txt.gz', modality=modalities),
+        # expand('GTEx_LCL.{modality}.gene_ENSG00000197536_pairs_chr5.txt.gz', modality=modalities),
+        expand('GTEx_BRNCTXA.{modality}.gene_ENSG00000115947_pairs_chr2.txt.gz', modality=modalities),
+
+rule tensorqtl_nominal_geuvadis:
+    input:
+        geno = multiext(geuvadis_geno, '.bed', '.bim', '.fam'),
+        bed = '../../Geuvadis/output/{modality}.bed.gz',
+        bedi = '../../Geuvadis/output/{modality}.bed.gz.tbi',
+        covar = '../../Geuvadis_Pheast/intermediate/covar/{modality}.covar.tsv',
+    output:
+        expand('Geuvadis.{{modality}}/Geuvadis.{{modality}}.cis_qtl_pairs.{chrom}.parquet', chrom=range(1, 23))
+    params:
+        geno_prefix = geuvadis_geno,
+        output_prefix = 'Geuvadis.{modality}',
+        output_dir = 'Geuvadis.{modality}',
+    conda: 'pantry'
+    resources:
+        mem_mb = 32000,
+        walltime = 12,
+        # partition = '--partition=gpu',
+    # retries: 5
+    shell:
+        # module load cuda
+        """
+        mkdir -p {params.output_dir}
+        python3 run_tensorqtl.py \
+            {params.geno_prefix} \
+            {input.bed} \
+            {params.output_prefix} \
+            --covariates {input.covar} \
+            --output_dir {params.output_dir} \
+            --mode cis_nominal
+        """
+
+rule tensorqtl_nominal_gtex:
+    input:
+        geno = multiext(gtex_geno, '.bed', '.bim', '.fam'),
+        bed = '../../GTEx/pheast/{tissue}/input/phenotypes/{modality}.bed.gz',
+        bedi = '../../GTEx/pheast/{tissue}/input/phenotypes/{modality}.bed.gz.tbi',
+        covar = '../../GTEx/pheast/{tissue}/intermediate/covar/{modality}.covar.tsv',
+    output:
+        expand('GTEx_{{tissue}}.{{modality}}/GTEx_{{tissue}}.{{modality}}.cis_qtl_pairs.chr{chrom}.parquet', chrom=range(1, 23))
+    params:
+        geno_prefix = gtex_geno,
+        output_prefix = 'GTEx_{tissue}.{modality}',
+        output_dir = 'GTEx_{tissue}.{modality}',
+    conda: 'pantry'
+    resources:
+        mem_mb = 32000,
+        walltime = 12,
+        # partition = '--partition=gpu',
+    # retries: 5
+    shell:
+        # module load cuda
+        """
+        mkdir -p {params.output_dir}
+        python3 run_tensorqtl.py \
+            {params.geno_prefix} \
+            {input.bed} \
+            {params.output_prefix} \
+            --covariates {input.covar} \
+            --output_dir {params.output_dir} \
+            --mode cis_nominal
+        """
+
+rule get_pairs_from_nominal:
+    input:
+        nominal = expand('GTEx_{{tissue}}.{{modality}}/GTEx_{{tissue}}.{{modality}}.cis_qtl_pairs.chr{chrom}.parquet', chrom=range(1, 23)),
+        cis_qtl = '../../Geuvadis_Pheast/output/qtl/{modality}.cis_qtl.txt.gz',
+    output:
+        pairs = 'GTEx_{tissue}.{modality}.Geuvadis_top_pairs.txt.gz'
+    params:
+        nominal_prefix = 'GTEx_{tissue}.{modality}/GTEx_{tissue}.{modality}.cis_qtl_pairs',
+        splice_flag = lambda w: '--simplify-splice-ids' if w.modality == 'splicing' else '',
+    conda: 'pantry'
+    shell:
+        """
+        python3 get_pairs_from_nominal.py \
+            --prefix {params.nominal_prefix} \
+            --cis-qtl {input.cis_qtl} \
+            {params.splice_flag} \
+            --output {output.pairs}
+        """
+
+rule get_gene_from_nominal:
+    input:
+        nominal = expand('GTEx_{{tissue}}.{{modality}}/GTEx_{{tissue}}.{{modality}}.cis_qtl_pairs.chr{chrom}.parquet', chrom=range(1, 23)),
+    output:
+        pairs = 'GTEx_{tissue}.{modality}.gene_{gene_id}_pairs_{chrom}.txt.gz'
+    params:
+        nominal_prefix = 'GTEx_{tissue}.{modality}/GTEx_{tissue}.{modality}.cis_qtl_pairs',
+    conda: 'pantry'
+    # resources:
+    #     walltime = 12,
+    shell:
+        """
+        python3 get_pairs_from_nominal.py \
+            --prefix {params.nominal_prefix} \
+            --gene {wildcards.gene_id} \
+            --chrom {wildcards.chrom} \
+            --output {output.pairs}
+        """
