@@ -30,8 +30,10 @@ GTEx/twas/*
 !GTEx/twas/scripts
 GTEx/samples_tissues.txt
 old
+phenos
 repo/*
 !repo/check_repo.py
 !repo/file_tree.txt
 !repo/README.md
 test_data
+slurm-*.out
