@@ -1,3 +1,4 @@
+.snakemake/
 age_sex/ADPSBQ/*
 !age_sex/ADPSBQ/config.yml
 age_sex/GTEx_Analysis_2017-06-05_v8_Annotations_SubjectPhenotypesDS.txt
@@ -30,6 +31,7 @@ GTEx/twas/*
 !GTEx/twas/scripts
 GTEx/samples_tissues.txt
 old
+pheast
 phenos
 repo/*
 !repo/check_repo.py

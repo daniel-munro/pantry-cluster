@@ -19,5 +19,5 @@ cut -f2 GTEx/samples_tissues.txt | sort | uniq | while read tissue; do
     cp scripts/config_phenos_gtex.yml phenos/$tissue/config.yml
 done
 
-## Get fastq files for one tissue
-# sbatch --account=cpu-gdml-investor --partition=cpu-gdml-investor -c16 --mem=32000 --time=48:00:00 --wrap="bash scripts/gtex_bam_to_fastq.sh tissuename" -J tissuename
+## Get fastq files for one tissue, e.g.:
+# snakemake -s scripts/gtex_bam_to_fastq.smk --profile slurm --config tissue=ADPSBQ -j200 --retries 2
