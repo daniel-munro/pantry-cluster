@@ -1,16 +1,15 @@
 set -e
 
 ## Set up Pantry Pheast for all tissues
-# cat GTEx/tissues.pheast.txt | while read tissue; do
-cat tissues-ready.txt | while read tissue; do
+cat GTEx/tissues.pheast.txt | while read tissue; do
     echo $tissue
     mkdir -p pheast/$tissue/input
 
-    # ## Set up Pantry code
-    # cp ~/tools/Pantry/pheast/Snakefile pheast/$tissue/
-    # cp -r ~/tools/Pantry/pheast/scripts pheast/$tissue/
-    # cp -r ~/tools/Pantry/pheast/steps pheast/$tissue/
-    # cp scripts/config_pheast_gtex.yml pheast/$tissue/config.yml
+    ## Set up Pantry code
+    cp ~/tools/Pantry/pheast/Snakefile pheast/$tissue/
+    cp -r ~/tools/Pantry/pheast/scripts pheast/$tissue/
+    cp -r ~/tools/Pantry/pheast/steps pheast/$tissue/
+    cp scripts/config_pheast_gtex.yml pheast/$tissue/config.yml
 
     ## Prepare phenotypes
     cd phenos/$tissue

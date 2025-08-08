@@ -38,4 +38,7 @@ repo/*
 !repo/file_tree.txt
 !repo/README.md
 test_data
+twas/*
+!twas/scripts
+!twas/Snakefile
 slurm-*.out

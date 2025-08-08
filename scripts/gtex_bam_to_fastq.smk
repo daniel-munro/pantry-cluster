@@ -17,6 +17,9 @@ with open(f"phenos/{tissue}/input/samples.txt") as f:
 BAMDIR = "/data/hps/assoc/private/gdml/from_rss/scripps_data/gtex/v8/bams"
 FASTQDIR = f"phenos/{tissue}/input/fastq"
 
+localrules:
+    touch_fastqs,
+
 rule all:
     input:
         touch_done=f"{FASTQDIR}/touch.done",
@@ -29,9 +32,9 @@ rule bam_to_fastq:
         fastq2 = f"{FASTQDIR}/{{sample}}_2.fastq.gz"
     params:
         tmpdir = f"{FASTQDIR}/tmp_{{sample}}",
-        jar = os.path.expanduser("~/tools/picard.jar")
+        jar = os.path.expanduser("~/tools/picard.jar"),
     resources:
-        mem_mb = lambda wildards, attempt: 16000 * attempt,
+        mem_mb = lambda wildcards, attempt: 16000 * attempt,
     shell:
         r"""
         rm -rf {params.tmpdir}
